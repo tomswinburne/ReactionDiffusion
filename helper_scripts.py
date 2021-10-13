@@ -9,24 +9,38 @@ import scipy.linalg as spla
 import matplotlib.pyplot as plt
 import msmtools.analysis as mana
 
-def ordev(M,vec=False):
+def ordev(M,vec=False,pi=None):
     """
         Wrapper to order and normalize scipy.linalg.eig results
         M : numpy matrix
             Square matrix to be diagonalized
     """
-    _nu,_w,_v =  spla.eig(M,left=True)
-    _nu = -_nu.real
-    _w = _w[:,_nu.argsort()]
-    _v = _v[:,_nu.argsort()]
-    _nu = _nu[_nu.argsort()]
-    _w = _w@np.diag(1.0/np.diag(_w.T@_v)) * _v[:,0].sum()
-    _v /= _v[:,0].sum()
+    if pi is None:
+        _nu,_w,_v =  spla.eig(M,left=True)
+        _nu = -_nu.real
+        _w = _w[:,_nu.argsort()]
+        _v = _v[:,_nu.argsort()]
+        _nu = _nu[_nu.argsort()]
+        _w = _w@np.diag(1.0/np.diag(_w.T@_v)) * _v[:,0].sum()
+        _v /= _v[:,0].sum()
 
-    if not vec:
-        return _nu
+        if not vec:
+            return _nu
+        else:
+            return _nu,_w,_v
     else:
-        return _nu,_w,_v
+        assert pi.size==M.shape[0],"Dimension Mismatch!"
+        rPi = np.diag(np.sqrt(pi))
+        riPi = np.diag(1.0/np.sqrt(pi))
+        nu,tw = np.linalg.eigh(-riPi@M@rPi)
+        tw = tw[:,nu.argsort()]
+        nu = nu[nu.argsort()]
+        if not vec:
+            return nu
+        w = riPi@tw
+        v = rPi@tw
+        return nu,w,v
+
 
 def generate_random_blocks( N=10,
                             mean_bar = [0.1,1.0],
@@ -305,14 +319,14 @@ def plot_spectrum(fig,ax,
     ax.set_xticks([])
 
 
-def coarse_grain(C,L,R,ev_data,reduced_modes=1):
+def coarse_grain(C,L,R,ev_data,reduced_modes=1,return_Q=False,pi=None):
     """
         Perform coarse graining following paper
     """
     M = C.copy()
     for idim in range(len(L)):
         M += L[idim]+R[idim]
-    nu_0,w,v = ordev(M,vec=True)
+    nu_0,w,v = ordev(M,vec=True,pi=pi)
 
     def approx_ev(k,i=0):
         """
@@ -330,25 +344,34 @@ def coarse_grain(C,L,R,ev_data,reduced_modes=1):
     rN = reduced_modes
     W = w[:,:rN]
     V = v[:,:rN]
-    rQ = W@np.diag(np.exp(-nu_0[:rN]))@V.T
+    rQ = V@np.diag(np.exp(-nu_0[:rN]))@W.T
 
     """
         find CP linear combination matrix from PCCA+ membership functions
     """
-    CP = V.T@mana.pcca_memberships(rQ.real, reduced_modes)
+    CP = V.T@mana.pcca_memberships(rQ.T, reduced_modes)
     iCP = np.linalg.inv(CP)
 
     """
         Form reduced rate matricies
     """
-    rC = CP@W.T@(C-np.diag(np.diag(C)))@V@iCP
-    rC -= np.diag(np.diag(rC))
+    rC = CP@W.T@C@V@iCP
+    #rC -= np.diag(np.diag(rC))
     rL = [CP@W.T@L[0]@V@iCP,CP@W.T@L[1]@V@iCP]
     rR = [CP@W.T@R[0]@V@iCP,CP@W.T@R[1]@V@iCP]
+    rkt = (rC+rL[0]+rL[1]+rR[0]+rR[1]).sum(axis=0)
+    rC -= np.diag(rkt)
 
     rB = np.zeros((rN,rN))
     rM = np.block([[rB,rR[1],rB],
                    [rL[0],rC,rR[0]],
                    [rB,rL[1],rB]])
-    rM = np.where(np.abs(rM)<=1e-13,np.nan,-np.log(rM))
-    return rM, approx_ev
+    lrM = np.where(np.abs(rM)<=1e-13,np.nan,-np.log(rM))
+    if return_Q:
+      rC -= np.diag((rC+rL[0]+rL[1]+rR[0]+rR[1]).sum(axis=0))
+      rQ = np.block([[rB,rR[1],rB],
+                   [rL[0],rC,rR[0]],
+                   [rB,rL[1],rB]])
+      return lrM, approx_ev, rQ
+    else:
+      return lrM, approx_ev
